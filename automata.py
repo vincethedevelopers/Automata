@@ -30,9 +30,9 @@ class PushdownAutomata:
     # - Mendukung angka multi-digit (contoh: 12, 3.14) dan variabel (x, abc)
     # - Menghapus spasi sebelum tokenisasi
     # -------------------------
+    
     def tokenize(self, expr: str) -> List[str]:
-        s = expr.replace(" ", "")
-        return [m.group(0) for m in self.token_re.finditer(s)]
+        return [m.group(0) for m in self.token_re.finditer(expr)]
 
     def is_operand(self, tok: str) -> bool:
         # operand: angka (integer/float) atau variabel berbasis huruf
