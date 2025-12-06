@@ -1,5 +1,5 @@
 """
-Soal 2 Fighting Game Combo Detector - Finite State Machine
+Soal 2 - Finite State Machine: Fighting Game Combo Detector
 Kelompok: Group-4
 
 Terminal:
@@ -18,14 +18,24 @@ class InputKey(Enum):
     RIGHT = "→"
     SPACE = "Space"
 
+# -------------------------
+# Definisi combo
+# - name: nama combo
+# - sequence: urutan InputKey yang diperlukan
+# - special_name: nama special jika SPACE di-hold
+# -------------------------
 @dataclass
 class ComboDefinition:
     name: str
     sequence: List[InputKey]
-    special_name: Optional[str] = None  # nama special jika SPACE di-hold
+    special_name: Optional[str] = None
 
 # -------------------------
 # State tracker untuk tiap combo
+# - current_position: posisi saat ini dalam sequence
+# - last_input_time: waktu input terakhir (untuk timeout)
+# - space_press_start: waktu ketika SPACE terdaftar (untuk simulasi hold)
+# - space_is_held: flag bahwa SPACE sedang "ditekan" (disimulasikan)
 # -------------------------
 class ComboState:
     def __init__(self, combo_def: ComboDefinition):
@@ -41,56 +51,57 @@ class ComboState:
         self.space_press_start = 0.0
         self.space_is_held = False
 
-    def is_timeout(self, current_time: float, timeout: float = 1.0) -> bool:
+    def is_timeout(self, now: float, timeout: float = 1.0) -> bool:
         if self.last_input_time == 0.0:
             return False
-        return (current_time - self.last_input_time) > timeout
+        return (now - self.last_input_time) > timeout
 
-    def process_input(self, key: InputKey, current_time: float) -> Tuple[bool, bool, Optional[str]]:
+    def process_input(self, key: InputKey, now: float) -> Tuple[bool, bool, Optional[str]]:
         """
-        Proses input untuk combo ini.
-        Returns:
-            (is_complete, is_valid_input, combo_name_or_None)
+        Proses satu input
+        Return: (is_complete, is_valid_progress, combo_name_if_complete)
         """
-        # timeout -> reset posisi jika sudah lebih dari timeout
-        if self.is_timeout(current_time):
+        # reset bila timeout
+        if self.is_timeout(now):
             self.reset()
 
-        # safety: jika current_position out-of-range, reset
+        # safety: jika posisi melebihi, kembalikan 0
         if self.current_position >= len(self.combo_def.sequence):
             self.current_position = 0
 
-        expected_key = self.combo_def.sequence[self.current_position]
+        expected = self.combo_def.sequence[self.current_position]
 
-        if key == expected_key:
+        if key == expected:
+            # cocok, maju ke posisi berikutnya
             self.current_position += 1
-            self.last_input_time = current_time
+            self.last_input_time = now
 
+            # jika selesai seluruh sequence
             if self.current_position >= len(self.combo_def.sequence):
                 combo_name = self.combo_def.name
 
-                # jika tombol terakhir adalah SPACE dan ada special_name -> mulai mode hold
-                if key == InputKey.SPACE and self.combo_def.special_name:
-                    self.space_press_start = current_time
+                # jika tombol terakhir adalah SPACE dan combo punya special
+                if expected == InputKey.SPACE and self.combo_def.special_name:
+                    self.space_press_start = now
                     self.space_is_held = True
 
-                # reset posisi agar siap untuk deteksi ulang
+                # reset posisi untuk deteksi berikutnya (state internal tetap simpan hold)
                 self.current_position = 0
-
                 return True, True, combo_name
 
             return False, True, None
-        else:
-            return False, False, None
 
-    def check_space_hold(self, current_time: float) -> Optional[str]:
+        # tidak cocok
+        return False, False, None
+
+    def check_space_hold(self, now: float, lower: float = 1.9, upper: float = 3.1) -> Optional[str]:
         """
-        Jika SPACE sedang di-hold dan durasinya antara 2-3 detik, kembalikan special_name.
-        Setelah memberikan efek, release space.
+        Cek apakah SPACE ditahan dalam rentang yang dianggap special.
+        (toleransi dibuat sedikit longgar: 1.9 - 3.1 detik)
         """
         if self.space_is_held and self.combo_def.special_name:
-            hold_duration = current_time - self.space_press_start
-            if 2.0 <= hold_duration <= 3.0:
+            dur = now - self.space_press_start
+            if lower <= dur <= upper:
                 self.release_space()
                 return self.combo_def.special_name
         return None
@@ -100,10 +111,11 @@ class ComboState:
         self.space_press_start = 0.0
 
 # -------------------------
-# FSM utama
+# FSM utama: daftar combo + state tracker
 # -------------------------
 class FightingGameFSM:
     def __init__(self):
+        # daftar combo. Sesuaikan urutan dan definisi sesuai soal.
         self.combos: List[ComboDefinition] = [
             ComboDefinition("Hadoken", [InputKey.RIGHT, InputKey.RIGHT, InputKey.RIGHT, InputKey.SPACE], "SUPER HADOKEN"),
             ComboDefinition("Shoryuken", [InputKey.UP, InputKey.DOWN, InputKey.UP, InputKey.RIGHT, InputKey.SPACE], "SUPER SHORYUKEN"),
@@ -116,148 +128,202 @@ class FightingGameFSM:
             ComboDefinition("Final Dragon Punch", [InputKey.LEFT, InputKey.UP, InputKey.RIGHT, InputKey.RIGHT, InputKey.DOWN, InputKey.UP, InputKey.RIGHT, InputKey.SPACE], "ULTIMATE DRAGON PUNCH"),
             ComboDefinition("Ultimate Hurricane Kick", [InputKey.RIGHT, InputKey.RIGHT, InputKey.UP, InputKey.DOWN, InputKey.RIGHT, InputKey.UP, InputKey.RIGHT, InputKey.RIGHT, InputKey.SPACE], "GODLIKE HURRICANE KICK"),
         ]
-        self.combo_states: List[ComboState] = [ComboState(c) for c in self.combos]
-        self.input_buffer: List[Tuple[InputKey, float]] = []
-        self.max_buffer_size: int = 50
+        self.states: List[ComboState] = [ComboState(c) for c in self.combos]
+        self.buffer: List[Tuple[InputKey, float]] = []
+        self.max_buffer = 50
+
+        # map input keyboard ke InputKey
         self.key_map = {
             'w': InputKey.UP, 's': InputKey.DOWN, 'a': InputKey.LEFT, 'd': InputKey.RIGHT,
-            ' ': InputKey.SPACE, 'up': InputKey.UP, 'down': InputKey.DOWN, 'left': InputKey.LEFT, 'right': InputKey.RIGHT, 'space': InputKey.SPACE
+            ' ': InputKey.SPACE, 'space': InputKey.SPACE, 'up': InputKey.UP, 'down': InputKey.DOWN,
+            'left': InputKey.LEFT, 'right': InputKey.RIGHT
         }
 
-    def reset_all_states(self) -> None:
-        for st in self.combo_states:
+    def reset_all(self) -> None:
+        for st in self.states:
             st.reset()
 
-    def process_key_input(self, key_char: str) -> Optional[str]:
+    def process_key(self, ch: str) -> Optional[str]:
         """
-        Terima input karakter string (misal 'w','a','d',' ') -> kembalikan nama combo jika terdeteksi.
+        Terima satu karakter/keyword (mis. 'd' atau 'space').
+        Mengembalikan nama combo bila terdeteksi.
         """
-        current_time = time.time()
-        key = self.key_map.get(key_char.lower())
+        now = time.time()
+        key = self.key_map.get(ch.lower())
         if not key:
             return None
 
-        # simpan di buffer 
-        self.input_buffer.append((key, current_time))
-        if len(self.input_buffer) > self.max_buffer_size:
-            self.input_buffer.pop(0)
+        # buffer (opsional, untuk debugging)
+        self.buffer.append((key, now))
+        if len(self.buffer) > self.max_buffer:
+            self.buffer.pop(0)
 
-        detected_combo: Optional[str] = None
-        valid_for_any: bool = False
+        detected: Optional[str] = None
+        valid_any = False
 
-        # proses tiap state combo
-        for state in self.combo_states:
-            is_complete, is_valid, combo_name = state.process_input(key, current_time)
-            if is_complete:
-                detected_combo = combo_name
-            if is_valid:
-                valid_for_any = True
+        # proses semua state paralel
+        for st in self.states:
+            complete, valid, name = st.process_input(key, now)
+            if complete:
+                detected = name
+            if valid:
+                valid_any = True
 
-        # jika input tidak valid untuk combo yang sedang progress -> reset those
-        if not valid_for_any:
-            for state in self.combo_states:
-                if state.current_position > 0:
-                    expected = state.combo_def.sequence[state.current_position] if state.current_position < len(state.combo_def.sequence) else None
+        # jika input ini tidak valid untuk state yang on-progress, reset mereka
+        if not valid_any:
+            for st in self.states:
+                if st.current_position > 0:
+                    expected = None
+                    if st.current_position < len(st.combo_def.sequence):
+                        expected = st.combo_def.sequence[st.current_position]
                     if expected is not None and key != expected:
-                        state.reset()
+                        st.reset()
 
-        return detected_combo
+        return detected
 
-    def check_space_hold_effects(self) -> Optional[str]:
+    def check_specials(self) -> Optional[str]:
+        """Cek semua state apakah ada special yang memenuhi kondisi hold"""
         now = time.time()
-        for state in self.combo_states:
-            special = state.check_space_hold(now)
+        for st in self.states:
+            special = st.check_space_hold(now)
             if special:
                 return special
         return None
 
-    def get_current_progress(self) -> List[str]:
-        prog: List[str] = []
-        for st in self.combo_states:
-            if st.current_position > 0:
-                prog.append(f"{st.combo_def.name}: {st.current_position}/{len(st.combo_def.sequence)}")
-        return prog
+    def reset_combo(self, name: str) -> None:
+        for st in self.states:
+            if st.combo_def.name == name:
+                st.reset()
+                return
 
-    def display_combo_list(self) -> None:
-        print("\n" + "="*70)
+    def progress_list(self) -> List[str]:
+        out: List[str] = []
+        for st in self.states:
+            if st.current_position > 0:
+                out.append(f"{st.combo_def.name}: {st.current_position}/{len(st.combo_def.sequence)}")
+        return out
+
+    def show_combos(self) -> None:
+        print("\n" + "=" * 60)
         print("DAFTAR COMBO")
-        print("="*70)
-        for i, combo in enumerate(self.combos, 1):
-            seq = ' '.join([k.value for k in combo.sequence])
-            print(f"{i:2d}. {combo.name:25s} {seq}")
-        print("="*70)
-        print("Tips: Jeda antar input maksimal 1 detik. Hold SPACE 2-3 detik untuk special effect.")
-        print("="*70)
+        print("=" * 60)
+        for i, c in enumerate(self.combos, 1):
+            seq = ' '.join([k.value for k in c.sequence])
+            print(f"{i:2d}. {c.name:25s} {seq}")
+        print("=" * 60)
+        print("Catatan:")
+        print(" - Jeda antar input maksimal 1 detik.")
+        print(" - Untuk simulasi hold SPACE gunakan syntax: space:<detik> mis. space:2.5")
+        print(" - Contoh input interaktif: ddd space:2.5")
+        print("=" * 60)
 
 # -------------------------
-# Simulator / CLI
+# Simulator / Interface (terminal)
+# - support interactive + test mode
+# - untuk terminal: hold SPACE harus disimulasikan dengan space:<dur>
 # -------------------------
 class GameSimulator:
     def __init__(self):
         self.fsm = FightingGameFSM()
-        self.detected_count: int = 0
+        self.count_detected = 0
 
     def run_interactive(self) -> None:
-        print("\n" + "="*60)
-        print("FIGHTING GAME - Interactive")
-        print("="*60)
-        self.fsm.display_combo_list()
-        print("\nMode nyata: gunakan W/A/S/D untuk arah, ketik 'space' atau tekan spasi.")
-        print("Ketik 'help' untuk daftar, 'reset' untuk reset, 'quit' untuk keluar.")
+        self.fsm.show_combos()
+        print("\nMode Interactive: ketik urutan tombol satu baris lalu ENTER.")
+        print("Contoh: ddd space:2.5   (tekan d d d lalu simulasikan hold space 2.5s)")
+        print("Perintah: help, reset, quit\n")
 
         try:
             while True:
-                cmd = input("\nInput: ").strip().lower()
-                if cmd == 'quit':
-                    print("Total combos detected:", self.detected_count)
+                cmd = input("Input: ").strip()
+                if not cmd:
+                    continue
+                if cmd.lower() == 'quit':
+                    print("Total combos detected:", self.count_detected)
                     break
-                if cmd == 'help':
-                    self.fsm.display_combo_list()
+                if cmd.lower() == 'help':
+                    self.fsm.show_combos()
                     continue
-                if cmd == 'reset':
-                    self.fsm.reset_all_states()
-                    print("All states reset.")
+                if cmd.lower() == 'reset':
+                    self.fsm.reset_all()
+                    print("Semua state di-reset.")
                     continue
 
-                # process each token (support words like "ddd " or "space")
+                # parse input baris:
+                # - mendukung "ddd", "d d d", "space", "space:2.5", "wswds space:2.5"
                 tokens: List[str] = []
-                if cmd == 'space':
-                    tokens = [' ']
+                if ' ' in cmd and len(cmd) > 1:
+                    parts = cmd.split()
+                    for p in parts:
+                        if p.startswith('space:'):
+                            tokens.append(p)   # special token
+                        elif p.lower() == 'space':
+                            tokens.append('space')
+                        else:
+                            # pecah string "ddd" jadi ['d','d','d']
+                            tokens.extend(list(p))
                 else:
-                    # if contains spaces (like "d d d "), split; else iterate chars
-                    if ' ' in cmd and len(cmd) > 1:
-                        parts = cmd.split()
-                        for p in parts:
-                            if p == 'space':
-                                tokens.append(' ')
-                            else:
-                                tokens.extend(list(p))
-                    else:
-                        tokens = list(cmd)
+                    tokens = list(cmd)
 
+                # proses token berurutan
                 for t in tokens:
-                    res = self.fsm.process_key_input(t)
-                    if res:
-                        print(f"🔥 COMBO DETECTED: {res} 🔥")
-                        self.detected_count += 1
+                    # handle simulated hold: "space:2.5"
+                    if isinstance(t, str) and t.startswith('space:'):
+                        try:
+                            dur = float(t.split(':', 1)[1])
+                        except Exception:
+                            print("Format space invalid. Gunakan space:<detik> mis. space:2.5")
+                            continue
+
+                        # register space press
+                        detected = self.fsm.process_key('space')
+                        if detected:
+                            print(f"\n🔥 COMBO DETECTED: {detected} 🔥")
+                            self.count_detected += 1
+                            # jangan reset sekarang; tunggu cek hold
+
+                        # simulasikan hold
+                        time.sleep(dur)
+
+                        # cek special sebelum reset
+                        special = self.fsm.check_specials()
+                        if special:
+                            print(f"\n⭐ SPECIAL EFFECT: {special} ⭐")
+
+                        # setelah cek special, reset combo yang terdeteksi (bersihkan progress)
+                        if detected:
+                            self.fsm.reset_combo(detected)
+                        continue
+
+                    # normal token: single char atau 'space'
+                    keytoken = t
+                    if t == 'space':
+                        keytoken = 'space'  # map ke 'space'
+
+                    detected = self.fsm.process_key(keytoken)
+                    if detected:
+                        print(f"\n🔥 COMBO DETECTED: {detected} 🔥")
+                        self.count_detected += 1
+                        self.fsm.reset_combo(detected)
+
+                    # sedikit delay agar progres lebih realistis
                     time.sleep(0.02)
 
-                # cek hold SPACE effect shortly after
-                special = self.fsm.check_space_hold_effects()
+                # cek apakah ada special triggered tanpa simulasi (jarang di terminal)
+                special = self.fsm.check_specials()
                 if special:
-                    print(f"⭐ SPECIAL EFFECT: {special} ⭐")
+                    print(f"\n⭐ SPECIAL EFFECT: {special} ⭐")
 
-                prog = self.fsm.get_current_progress()
+                # tampilkan progress singkat
+                prog = self.fsm.progress_list()
                 if prog:
                     print("Progress:", ', '.join(prog))
 
         except KeyboardInterrupt:
-            print("\nInterrupted. Total combos:", self.detected_count)
+            print("\nInterrupted. Total combos:", self.count_detected)
 
     def run_test_mode(self) -> None:
-        print("\n" + "="*60)
-        print("TEST MODE - Automated")
-        print("="*60)
+        print("\nAutomated Test Mode\n")
         tests: List[Tuple[str, str]] = [
             ("ddd ", "Hadoken"),
             ("wswds ", "Shoryuken"),
@@ -265,18 +331,21 @@ class GameSimulator:
             ("wwds ", "Dragon Punch"),
             ("dsdd ", "Hurricane Kick"),
         ]
-        for seq, expected in tests:
-            self.fsm.reset_all_states()
-            print(f"Testing input: {seq} expecting {expected}")
+        for seq, expect in tests:
+            self.fsm.reset_all()
+            print(f"Test input: {seq.strip()}  expecting: {expect}")
             detected: Optional[str] = None
             for ch in seq:
-                time.sleep(0.1)
-                r = self.fsm.process_key_input(ch)
+                time.sleep(0.08)
+                r = self.fsm.process_key(ch)
                 if r:
                     detected = r
-            print("Result:", detected, "->", "PASS" if detected == expected else "FAIL")
-            print("-"*40)
+            print("Result:", detected, "->", "PASS" if detected == expect else "FAIL")
+            print("-" * 40)
 
+# -------------------------
+# Main
+# -------------------------
 def main() -> None:
     sim = GameSimulator()
     print("\n1. Interactive\n2. Test Mode\n3. Show Combo List\n4. Exit")
@@ -286,7 +355,7 @@ def main() -> None:
     elif choice == '2':
         sim.run_test_mode()
     elif choice == '3':
-        sim.fsm.display_combo_list()
+        sim.fsm.show_combos()
     else:
         print("Goodbye.")
 
